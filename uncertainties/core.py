@@ -713,6 +713,62 @@ def wrap(f, derivatives_args=[], derivatives_kwargs={}):
         if not isinstance(f_nominal_value, FLOAT_LIKE_TYPES):
             return NotImplemented
 
+        args_pos_max = [] # bool array, true if f larger when adding uncertainty
+        for index in pos_w_uncert:
+            args_values[index] = args[index].max
+            f_p = f(*args_values, **kwargs)
+            
+            args_values[index] = args[index].min
+            f_n = f(*args_values, **kwargs)
+            # restore the value
+            args_values[index] = args[index].bar
+            args_pos_max.append(f_p > f_n)
+        
+        kwargs_pos_max = [] # bool map, true if f larger when adding uncertainty
+        for name in names_w_uncert:
+            value_with_uncert = kwargs[name]
+            kwargs[name] = value_with_uncert.max
+            f_p = f(*args_values, **kwargs)
+            
+            kwargs[name] = value_with_uncert.min
+            f_n = f(*args_values, **kwargs)
+            # restore the value
+            kwargs[name] = value_with_uncert.bar
+            kwargs_pos_max[name] = f_p > f_n
+        
+        # find max
+        for index, pos_max in zip(pos_w_uncert, args_pos_max):
+            if pos_max:
+                args_values[index] = args[index].max
+            else:
+                args_values[index] = args[index].min
+        kwargs_pos_max = [] # bool array, true if f larger when adding uncertainty
+        for name in names_w_uncert:
+            value_with_uncert = kwargs[name]
+            if pos_max:
+                kwargs[name] = value_with_uncert.max
+            else:
+                kwargs[name] = value_with_uncert.min
+        f_max = f(*args_values, **kwargs)
+        
+        # find min
+        for index, pos_max in zip(pos_w_uncert, args_pos_max):
+            if pos_max:
+                args_values[index] = args[index].min
+            else:
+                args_values[index] = args[index].max
+        kwargs_pos_max = [] # bool array, true if f larger when adding uncertainty
+        for name in names_w_uncert:
+            value_with_uncert = kwargs[name]
+            if pos_max:
+                kwargs[name] = value_with_uncert.min
+            else:
+                kwargs[name] = value_with_uncert.max
+        f_min = f(*args_values, **kwargs)
+        
+        f_bar = (f_max+f_min)/2
+        f_range = (f_max-f_min)/2
+
         ########################################
 
         # Calculation of the linear part of the function value,
@@ -749,7 +805,7 @@ def wrap(f, derivatives_args=[], derivatives_kwargs={}):
         # The function now returns the necessary linear approximation
         # to the function:
         return AffineScalarFunc(
-            f_nominal_value, LinearCombination(linear_part))
+            f_nominal_value, LinearCombination(linear_part), bar=f_bar, rng=f_range)
 
     f_with_affine_output = set_doc("""\
     Version of %s(...) that returns an affine approximation
@@ -1620,7 +1676,7 @@ class AffineScalarFunc(object):
     """
 
     # To save memory in large arrays:
-    __slots__ = ('_nominal_value', '_linear_part')
+    __slots__ = ('_nominal_value', '_linear_part', '_bar', '_range')
 
     # !! Fix for mean() in NumPy 1.8.0:
     class dtype(object):
@@ -1633,7 +1689,7 @@ class AffineScalarFunc(object):
     # operator.__*__ functions (while taking care of properly handling
     # reverse operations: __radd__, etc.).
 
-    def __init__(self, nominal_value, linear_part):
+    def __init__(self, nominal_value, linear_part, bar=None, rng=None):
         """
         nominal_value -- value of the function when the linear part is
         zero.
@@ -1665,6 +1721,29 @@ class AffineScalarFunc(object):
         # is not obvious, when the algorithm should work for all
         # functions beyond sums).
         self._linear_part = linear_part
+
+        self._bar = bar if bar else self._nominal_value
+        self._range = rng if rng else 0
+
+    @property
+    def bar(self):
+        return self._bar
+
+    @property
+    def range(self):
+        return self._range
+
+    @property
+    def max(self):
+        return self._bar + self._range
+
+    @property
+    def min(self):
+        return self._bar - self._range
+
+    @property
+    def minmax(self):
+        return Variable(self.bar, self._range)
 
     # The following prevents the 'nominal_value' attribute from being
     # modified by the user:
@@ -2761,7 +2840,7 @@ class Variable(AffineScalarFunc):
         # takes much more memory.  Thus, this implementation chooses
         # more cycles and a smaller memory footprint instead of no
         # cycles and a larger memory footprint.
-        super(Variable, self).__init__(value, LinearCombination({self: 1.}))
+        super(Variable, self).__init__(value, LinearCombination({self: 1.}), rng=std_dev)
 
         self.std_dev = std_dev  # Assignment through a Python property
 
